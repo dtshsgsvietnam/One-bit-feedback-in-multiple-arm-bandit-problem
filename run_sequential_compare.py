@@ -1,47 +1,64 @@
 import argparse
-import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 from algorithms import run_onebit_shared_top_two, run_full_feedback_top_two
-from oracles import solve_shared_lp, full_feedback_beta_oracle
 
 
 def run_many(args):
     mu = np.asarray(args.mu, dtype=float)
-    true_best = int(np.argmax(mu))
-
     rows = []
     trajectories = {}
+
+    total_jobs = len(args.deltas) * args.reps * 2
+    job = 0
 
     for delta in args.deltas:
         for algo in ["onebit", "full"]:
             for rep in range(args.reps):
-                seed = args.seed + 100000*rep + int(1e6*delta)
+                job += 1
+                seed = args.seed + 100000 * rep + int(1e6 * delta)
+
+                print(
+                    f"\n=== Job {job}/{total_jobs} | {algo} | "
+                    f"delta={delta} | rep={rep+1}/{args.reps} ===",
+                    flush=True,
+                )
+
                 if algo == "onebit":
                     out = run_onebit_shared_top_two(
-                        mu=mu, delta=delta, beta=args.beta, sigma=args.sigma,
+                        mu=mu,
+                        delta=delta,
+                        beta=args.beta,
+                        sigma=args.sigma,
                         param_bounds=(args.imin, args.imax),
                         q_bounds=(args.qmin, args.qmax),
-                        q_grid_size=args.Mq, x_grid_size=args.Mx,
+                        q_grid_size=args.Mq,
+                        x_grid_size=args.Mx,
                         challenger=args.challenger,
                         max_rounds=args.max_rounds,
                         oracle_period=args.oracle_period,
+                        oracle_mode=args.oracle_mode,
                         reg_scale=args.reg_scale,
                         reg_power=args.reg_power,
                         boundary=args.onebit_boundary,
                         seed=seed,
                         record_every=args.record_every,
+                        progress_every=args.progress_every,
                     )
                 else:
                     out = run_full_feedback_top_two(
-                        mu=mu, delta=delta, beta=args.beta, sigma=args.sigma,
+                        mu=mu,
+                        delta=delta,
+                        beta=args.beta,
+                        sigma=args.sigma,
                         challenger=args.challenger,
                         max_rounds=args.max_rounds,
                         boundary="common",
                         seed=seed,
                         record_every=args.record_every,
+                        progress_every=0,
                     )
 
                 rows.append({
@@ -57,9 +74,12 @@ def run_many(args):
                 if rep == 0 and delta == args.deltas[0]:
                     trajectories[algo] = out["history"]
 
-                print(algo, "delta=", delta, "rep=", rep,
-                      "tau=", out["tau"], "correct=", out["correct"],
-                      "runtime=", round(out["runtime_sec"], 3))
+                print(
+                    f"done | tau={out['tau']} | stopped={out['stopped']} | "
+                    f"correct={out['correct']} | "
+                    f"runtime={out['runtime_sec']:.3f}s",
+                    flush=True,
+                )
 
     return pd.DataFrame(rows), trajectories
 
@@ -67,10 +87,17 @@ def run_many(args):
 def plot_summary(df, out_prefix):
     summary = (
         df.groupby(["algorithm", "delta"])
-          .agg(mean_tau=("tau", "mean"),
-               se_tau=("tau", lambda x: x.std(ddof=1)/np.sqrt(len(x)) if len(x)>1 else 0.0),
-               error_rate=("correct", lambda x: 1.0 - np.mean(x)),
-               mean_runtime=("runtime_sec", "mean"))
+          .agg(
+              mean_tau=("tau", "mean"),
+              se_tau=(
+                  "tau",
+                  lambda x: x.std(ddof=1) / np.sqrt(len(x))
+                  if len(x) > 1 else 0.0,
+              ),
+              stop_rate=("stopped", "mean"),
+              error_rate=("correct", lambda x: 1.0 - np.mean(x)),
+              mean_runtime=("runtime_sec", "mean"),
+          )
           .reset_index()
     )
     summary.to_csv(out_prefix + "_summary.csv", index=False)
@@ -78,7 +105,12 @@ def plot_summary(df, out_prefix):
     plt.figure()
     for algo, g in summary.groupby("algorithm"):
         g = g.sort_values("delta", ascending=False)
-        plt.plot(np.log(1.0/g["delta"]), g["mean_tau"], marker="o", label=algo)
+        plt.plot(
+            np.log(1.0 / g["delta"]),
+            g["mean_tau"],
+            marker="o",
+            label=algo,
+        )
     plt.xlabel(r"$\log(1/\delta)$")
     plt.ylabel(r"mean stopping time $\mathbb{E}[\tau_\delta]$")
     plt.legend()
@@ -89,8 +121,12 @@ def plot_summary(df, out_prefix):
     plt.figure()
     for algo, g in summary.groupby("algorithm"):
         g = g.sort_values("delta", ascending=False)
-        plt.plot(g["delta"], g["mean_tau"]/np.log(1.0/g["delta"]),
-                 marker="o", label=algo)
+        plt.plot(
+            g["delta"],
+            g["mean_tau"] / np.log(1.0 / g["delta"]),
+            marker="o",
+            label=algo,
+        )
     plt.xscale("log")
     plt.xlabel(r"$\delta$")
     plt.ylabel(r"$\mathbb{E}[\tau_\delta]/\log(1/\delta)$")
@@ -101,7 +137,10 @@ def plot_summary(df, out_prefix):
 
     plt.figure()
     for algo, g in summary.groupby("algorithm"):
-        plt.plot(g["delta"], g["mean_runtime"], marker="o", label=algo)
+        plt.plot(
+            g["delta"], g["mean_runtime"],
+            marker="o", label=algo
+        )
     plt.xscale("log")
     plt.yscale("log")
     plt.xlabel(r"$\delta$")
@@ -117,8 +156,10 @@ def plot_summary(df, out_prefix):
 def plot_trajectory(hist, label, out_file):
     if not hist or len(hist["n"]) == 0:
         return
+
     n = np.asarray(hist["n"])
     props = np.asarray(hist["counts_prop"])
+
     plt.figure()
     for k in range(props.shape[1]):
         plt.plot(n, props[:, k], label=f"arm {k+1}")
@@ -133,39 +174,79 @@ def plot_trajectory(hist, label, out_file):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mu", nargs="+", type=float, default=[0.0, -0.1, -0.3])
+
+    parser.add_argument(
+        "--mu", nargs="+", type=float,
+        default=[0.0, -0.1, -0.3]
+    )
     parser.add_argument("--sigma", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=0.5)
-    parser.add_argument("--deltas", nargs="+", type=float,
-                        default=[0.1, 0.05, 0.02, 0.01])
-    parser.add_argument("--reps", type=int, default=50)
-    parser.add_argument("--challenger", choices=["TC", "TCI"], default="TCI")
+
+    parser.add_argument(
+        "--deltas", nargs="+", type=float,
+        default=[0.1, 0.05]
+    )
+    parser.add_argument("--reps", type=int, default=20)
+    parser.add_argument(
+        "--challenger", choices=["TC", "TCI"], default="TCI"
+    )
+
     parser.add_argument("--imin", type=float, default=-2.0)
     parser.add_argument("--imax", type=float, default=1.0)
     parser.add_argument("--qmin", type=float, default=-2.0)
     parser.add_argument("--qmax", type=float, default=1.0)
-    parser.add_argument("--Mq", type=int, default=31)
-    parser.add_argument("--Mx", type=int, default=61)
-    parser.add_argument("--oracle-period", type=int, default=20)
+
+    parser.add_argument("--Mq", type=int, default=21)
+    parser.add_argument("--Mx", type=int, default=41)
+
+    parser.add_argument("--oracle-period", type=int, default=50)
+    parser.add_argument(
+        "--oracle-mode",
+        choices=["lp", "regularized"],
+        default="lp",
+        help=(
+            "'lp' is the fast experimental oracle; "
+            "'regularized' is closer to the theorem."
+        ),
+    )
+
     parser.add_argument("--reg-scale", type=float, default=0.02)
     parser.add_argument("--reg-power", type=float, default=0.10)
-    parser.add_argument("--onebit-boundary", choices=["theorem", "common"], default="common")
-    parser.add_argument("--max-rounds", type=int, default=20000)
-    parser.add_argument("--record-every", type=int, default=25)
+
+    parser.add_argument(
+        "--onebit-boundary",
+        choices=["theorem", "common"],
+        default="common",
+    )
+
+    parser.add_argument("--max-rounds", type=int, default=30000)
+    parser.add_argument("--record-every", type=int, default=50)
+    parser.add_argument("--progress-every", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--out-prefix", type=str, default="seq_compare")
+    parser.add_argument(
+        "--out-prefix", type=str, default="seq_compare"
+    )
+
     args = parser.parse_args()
 
     df, trajectories = run_many(args)
+
     df.to_csv(args.out_prefix + "_raw.csv", index=False)
     summary = plot_summary(df, args.out_prefix)
 
     if "onebit" in trajectories:
-        plot_trajectory(trajectories["onebit"], "One-bit shared Top-Two",
-                        args.out_prefix + "_traj_onebit.png")
+        plot_trajectory(
+            trajectories["onebit"],
+            "One-bit shared Top-Two",
+            args.out_prefix + "_traj_onebit.png",
+        )
+
     if "full" in trajectories:
-        plot_trajectory(trajectories["full"], "Full-feedback Top-Two",
-                        args.out_prefix + "_traj_full.png")
+        plot_trajectory(
+            trajectories["full"],
+            "Full-feedback Top-Two",
+            args.out_prefix + "_traj_full.png",
+        )
 
     print("\nSummary:")
     print(summary.to_string(index=False))
